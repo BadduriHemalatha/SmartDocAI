@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from zipfile import ZipFile
 
 from smartdoc.exceptions import (
     CorruptedFileError,
@@ -46,8 +47,15 @@ def extract_documents(
         )
 
     records: list[DocumentRecord] = []
+
     for uploaded in files:
-        records.append(extract_one(uploaded, max_file_size_bytes=max_file_size_bytes))
+        records.append(
+            extract_one(
+                uploaded,
+                max_file_size_bytes=max_file_size_bytes,
+            )
+        )
+
     return records
 
 
@@ -88,15 +96,21 @@ def extract_one(uploaded, *, max_file_size_bytes: int) -> DocumentRecord:
         else:
             pages = _extract_txt(name, data)
 
-    except (UnsupportedFileTypeError, EmptyDocumentError, CorruptedFileError):
+    except (
+        UnsupportedFileTypeError,
+        EmptyDocumentError,
+        CorruptedFileError,
+    ):
         raise
 
     except Exception as exc:
         logger.exception("Extraction failed for %s", name)
+
         raise ExtractionError(
             f"Failed to extract {name}: {exc}",
             user_message=(
-                f"Could not read '{name}'. The file may be corrupted or password-protected."
+                f"Could not read '{name}'. "
+                "The file may be corrupted or password-protected."
             ),
         ) from exc
 
@@ -111,7 +125,8 @@ def extract_one(uploaded, *, max_file_size_bytes: int) -> DocumentRecord:
             f"No extractable text in {name}",
             user_message=(
                 f"No readable text was found in '{name}'. "
-                "The PDF may contain scanned images that could not be read by OCR."
+                "The document may contain scanned images that could not be "
+                "read by OCR."
             ),
         )
 
@@ -138,15 +153,17 @@ def _read_bytes(uploaded) -> bytes:
 
     if hasattr(uploaded, "read"):
         data = uploaded.read()
+
         if isinstance(data, str):
             return data.encode("utf-8")
+
         return data
 
     raise ExtractionError("Upload object has no readable content.")
 
 
 def _extract_pdf(name: str, data: bytes) -> list[ExtractedPage]:
-    """Extract normal PDF text and use Tesseract OCR as a fallback for scanned pages."""
+    """Extract normal PDF text and use Tesseract OCR as a fallback."""
 
     try:
         from pypdf import PdfReader
@@ -160,7 +177,8 @@ def _extract_pdf(name: str, data: bytes) -> list[ExtractedPage]:
         raise CorruptedFileError(
             f"Corrupt PDF: {name}",
             user_message=(
-                f"'{name}' could not be opened as a PDF. The file may be corrupted."
+                f"'{name}' could not be opened as a PDF. "
+                "The file may be corrupted."
             ),
         ) from exc
 
@@ -177,7 +195,6 @@ def _extract_pdf(name: str, data: bytes) -> list[ExtractedPage]:
 
     pages: list[ExtractedPage] = []
 
-    # OCR libraries are imported only for PDF OCR fallback.
     try:
         import pymupdf
         import pytesseract
@@ -187,19 +204,23 @@ def _extract_pdf(name: str, data: bytes) -> list[ExtractedPage]:
         pytesseract = None
         Image = None
 
-    # Use the known Tesseract installation on Windows.
     if pytesseract is not None:
         tesseract_path = Path(
             r"C:\Program Files\Tesseract-OCR\tesseract.exe"
         )
 
         if tesseract_path.exists():
-            pytesseract.pytesseract.tesseract_cmd = str(tesseract_path)
+            pytesseract.pytesseract.tesseract_cmd = str(
+                tesseract_path
+            )
 
-    # Open the PDF once with PyMuPDF if OCR support is available.
     ocr_document = None
 
-    if pymupdf is not None and pytesseract is not None and Image is not None:
+    if (
+        pymupdf is not None
+        and pytesseract is not None
+        and Image is not None
+    ):
         try:
             ocr_document = pymupdf.open(
                 stream=data,
@@ -214,7 +235,6 @@ def _extract_pdf(name: str, data: bytes) -> list[ExtractedPage]:
 
     for index, page in enumerate(reader.pages, start=1):
 
-        # First try the existing normal PDF text extraction.
         try:
             text = page.extract_text() or ""
         except Exception as exc:
@@ -226,12 +246,10 @@ def _extract_pdf(name: str, data: bytes) -> list[ExtractedPage]:
             )
             text = ""
 
-        # If normal extraction finds no text, use OCR.
         if not text.strip() and ocr_document is not None:
             try:
                 pdf_page = ocr_document[index - 1]
 
-                # Render page at 2x resolution for better OCR accuracy.
                 pixmap = pdf_page.get_pixmap(
                     matrix=pymupdf.Matrix(2, 2),
                     alpha=False,
@@ -293,30 +311,48 @@ def _extract_pdf(name: str, data: bytes) -> list[ExtractedPage]:
 
 
 def _extract_docx(name: str, data: bytes) -> list[ExtractedPage]:
+    """Extract DOCX text/tables and OCR embedded images."""
+
     try:
         from docx import Document
         from docx.opc.exceptions import PackageNotFoundError
     except ImportError as exc:  # pragma: no cover
-        raise ExtractionError("python-docx is not installed.") from exc
+        raise ExtractionError(
+            "python-docx is not installed."
+        ) from exc
 
     try:
         document = Document(io.BytesIO(data))
+
     except PackageNotFoundError as exc:
         raise CorruptedFileError(
             f"Corrupt DOCX: {name}",
-            user_message=f"'{name}' could not be opened as a Word document.",
+            user_message=(
+                f"'{name}' could not be opened as a Word document."
+            ),
         ) from exc
+
     except Exception as exc:
         raise CorruptedFileError(
             f"Corrupt DOCX: {name}",
-            user_message=f"'{name}' could not be opened as a Word document.",
+            user_message=(
+                f"'{name}' could not be opened as a Word document."
+            ),
         ) from exc
+
+    # ---------------------------------------------------------
+    # 1. Extract normal DOCX paragraphs
+    # ---------------------------------------------------------
 
     paragraphs = [
         p.text.strip()
         for p in document.paragraphs
         if p.text and p.text.strip()
     ]
+
+    # ---------------------------------------------------------
+    # 2. Extract DOCX tables
+    # ---------------------------------------------------------
 
     for table in document.tables:
         for row in table.rows:
@@ -329,7 +365,116 @@ def _extract_docx(name: str, data: bytes) -> list[ExtractedPage]:
             if cells:
                 paragraphs.append(" | ".join(cells))
 
-    text = "\n".join(paragraphs)
+    text_parts = paragraphs.copy()
+
+    # ---------------------------------------------------------
+    # 3. OCR images embedded inside the DOCX
+    # ---------------------------------------------------------
+
+    try:
+        import pytesseract
+        from PIL import Image
+
+        tesseract_path = Path(
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        )
+
+        if tesseract_path.exists():
+            pytesseract.pytesseract.tesseract_cmd = str(
+                tesseract_path
+            )
+
+        with ZipFile(io.BytesIO(data)) as archive:
+
+            image_names = [
+                item
+                for item in archive.namelist()
+                if item.startswith("word/media/")
+                and item.lower().endswith(
+                    (
+                        ".png",
+                        ".jpg",
+                        ".jpeg",
+                        ".bmp",
+                        ".tif",
+                        ".tiff",
+                    )
+                )
+            ]
+
+            logger.info(
+                "Found %s embedded images in %s",
+                len(image_names),
+                name,
+            )
+
+            for image_index, image_name in enumerate(
+                image_names,
+                start=1,
+            ):
+                try:
+                    image_data = archive.read(image_name)
+
+                    with Image.open(
+                        io.BytesIO(image_data)
+                    ) as image:
+
+                        ocr_text = pytesseract.image_to_string(
+                            image,
+                            lang="eng",
+                        )
+
+                    if ocr_text and ocr_text.strip():
+
+                        text_parts.append(
+                            f"[Embedded image {image_index}]\n"
+                            f"{ocr_text.strip()}"
+                        )
+
+                        logger.info(
+                            "OCR extracted text from embedded image "
+                            "%s of %s",
+                            image_index,
+                            name,
+                        )
+
+                    else:
+                        logger.warning(
+                            "OCR found no text in embedded image "
+                            "%s of %s",
+                            image_index,
+                            name,
+                        )
+
+                except Exception as exc:
+                    logger.warning(
+                        "OCR failed for embedded image %s of %s: %s",
+                        image_index,
+                        name,
+                        exc,
+                    )
+
+    except ImportError:
+        logger.warning(
+            "DOCX image OCR dependencies are not available."
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "Could not process embedded DOCX images in %s: %s",
+            name,
+            exc,
+        )
+
+    # ---------------------------------------------------------
+    # 4. Combine normal text + OCR text
+    # ---------------------------------------------------------
+
+    text = "\n\n".join(
+        part.strip()
+        for part in text_parts
+        if part and part.strip()
+    )
 
     return [
         ExtractedPage(
@@ -358,10 +503,18 @@ def _extract_txt(name: str, data: bytes) -> list[ExtractedPage]:
 
 
 def _decode_text(data: bytes) -> str:
-    for encoding in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+    for encoding in (
+        "utf-8",
+        "utf-8-sig",
+        "cp1252",
+        "latin-1",
+    ):
         try:
             return data.decode(encoding)
         except UnicodeDecodeError:
             continue
 
-    return data.decode("utf-8", errors="replace")
+    return data.decode(
+        "utf-8",
+        errors="replace",
+    )
