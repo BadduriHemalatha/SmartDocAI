@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import shutil
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -33,6 +34,25 @@ class UploadedFileLike:
 
 def _suffix(name: str) -> str:
     return Path(name).suffix.lower()
+
+
+def _configure_tesseract(pytesseract) -> bool:
+    """Configure Tesseract using the system PATH.
+
+    This works on Windows, Linux, and Streamlit Community Cloud.
+    """
+
+    tesseract_path = shutil.which("tesseract")
+
+    if tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
+        logger.info("Using Tesseract OCR at: %s", tesseract_path)
+        return True
+
+    logger.warning(
+        "Tesseract executable was not found on the system PATH."
+    )
+    return False
 
 
 def extract_documents(
@@ -173,6 +193,7 @@ def _extract_pdf(name: str, data: bytes) -> list[ExtractedPage]:
 
     try:
         reader = PdfReader(io.BytesIO(data))
+
     except PdfReadError as exc:
         raise CorruptedFileError(
             f"Corrupt PDF: {name}",
@@ -204,15 +225,10 @@ def _extract_pdf(name: str, data: bytes) -> list[ExtractedPage]:
         pytesseract = None
         Image = None
 
+    # Configure Tesseract from the system PATH.
+    # This works on both Windows and Linux/Streamlit Cloud.
     if pytesseract is not None:
-        tesseract_path = Path(
-            r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-        )
-
-        if tesseract_path.exists():
-            pytesseract.pytesseract.tesseract_cmd = str(
-                tesseract_path
-            )
+        _configure_tesseract(pytesseract)
 
     ocr_document = None
 
@@ -226,6 +242,7 @@ def _extract_pdf(name: str, data: bytes) -> list[ExtractedPage]:
                 stream=data,
                 filetype="pdf",
             )
+
         except Exception as exc:
             logger.warning(
                 "Could not open %s for OCR: %s",
@@ -237,6 +254,7 @@ def _extract_pdf(name: str, data: bytes) -> list[ExtractedPage]:
 
         try:
             text = page.extract_text() or ""
+
         except Exception as exc:
             logger.warning(
                 "Failed extracting page %s of %s: %s",
@@ -246,6 +264,8 @@ def _extract_pdf(name: str, data: bytes) -> list[ExtractedPage]:
             )
             text = ""
 
+        # If normal PDF text extraction produced nothing,
+        # render the page and use OCR.
         if not text.strip() and ocr_document is not None:
             try:
                 pdf_page = ocr_document[index - 1]
@@ -316,6 +336,7 @@ def _extract_docx(name: str, data: bytes) -> list[ExtractedPage]:
     try:
         from docx import Document
         from docx.opc.exceptions import PackageNotFoundError
+
     except ImportError as exc:  # pragma: no cover
         raise ExtractionError(
             "python-docx is not installed."
@@ -340,20 +361,14 @@ def _extract_docx(name: str, data: bytes) -> list[ExtractedPage]:
             ),
         ) from exc
 
-    # ---------------------------------------------------------
-    # 1. Extract normal DOCX paragraphs
-    # ---------------------------------------------------------
-
+    # 1. Extract normal DOCX paragraphs.
     paragraphs = [
         p.text.strip()
         for p in document.paragraphs
         if p.text and p.text.strip()
     ]
 
-    # ---------------------------------------------------------
-    # 2. Extract DOCX tables
-    # ---------------------------------------------------------
-
+    # 2. Extract DOCX tables.
     for table in document.tables:
         for row in table.rows:
             cells = [
@@ -367,22 +382,12 @@ def _extract_docx(name: str, data: bytes) -> list[ExtractedPage]:
 
     text_parts = paragraphs.copy()
 
-    # ---------------------------------------------------------
-    # 3. OCR images embedded inside the DOCX
-    # ---------------------------------------------------------
-
+    # 3. OCR images embedded inside the DOCX.
     try:
         import pytesseract
         from PIL import Image
 
-        tesseract_path = Path(
-            r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-        )
-
-        if tesseract_path.exists():
-            pytesseract.pytesseract.tesseract_cmd = str(
-                tesseract_path
-            )
+        _configure_tesseract(pytesseract)
 
         with ZipFile(io.BytesIO(data)) as archive:
 
@@ -466,10 +471,7 @@ def _extract_docx(name: str, data: bytes) -> list[ExtractedPage]:
             exc,
         )
 
-    # ---------------------------------------------------------
-    # 4. Combine normal text + OCR text
-    # ---------------------------------------------------------
-
+    # 4. Combine normal text + OCR text.
     text = "\n\n".join(
         part.strip()
         for part in text_parts
