@@ -12,19 +12,26 @@ NOT_FOUND_MESSAGE = (
 def format_context(chunks: list[RetrievedChunk], max_chars: int) -> str:
     parts: list[str] = []
     used = 0
+
     for item in chunks:
         header = (
             f"[Source {item.rank} | Document: {item.chunk.document_name} "
             f"| Page: {item.chunk.page_label()} | Similarity: {item.score:.3f}]"
         )
+
         block = f"{header}\n{item.chunk.text.strip()}"
+
         if used + len(block) + 2 > max_chars:
             remaining = max_chars - used - 2
+
             if remaining > 200:
                 parts.append(block[:remaining] + "\n...")
+
             break
+
         parts.append(block)
         used += len(block) + 2
+
     return "\n\n".join(parts)
 
 
@@ -32,12 +39,25 @@ def build_qa_prompt(question: str, context: str) -> str:
     return f"""You are SmartDoc AI, a retrieval-augmented assistant.
 
 Answer the user's question using ONLY the document context below.
+
 Rules:
-- If the context does not contain enough information, reply exactly:
-  {NOT_FOUND_MESSAGE}
+- The document may have been extracted using OCR.
+- OCR text can contain spelling errors, missing spaces, broken words,
+  character substitutions, or other minor extraction errors.
+- Interpret obvious OCR errors using the surrounding context when the
+  intended meaning is clear.
+- If the context contains enough information to answer the question
+  despite minor OCR errors, answer the question.
+- Do not require an exact word-for-word match between the question and
+  the OCR text.
+- Use ONLY information supported by the document context.
 - Do not use outside knowledge.
 - Do not invent facts, names, numbers, or citations.
-- When you answer, cite document names and page numbers from the context tags.
+- If the context genuinely does not contain enough information, reply
+  exactly:
+  {NOT_FOUND_MESSAGE}
+- When answering, cite the document name and page number from the
+  context tags.
 - Be concise and professional.
 
 DOCUMENT CONTEXT:
@@ -51,6 +71,7 @@ ANSWER:"""
 
 def build_summary_prompt(text: str, document_names: list[str]) -> str:
     names = ", ".join(document_names) if document_names else "the uploaded document(s)"
+
     return f"""You are SmartDoc AI. Write a clear, faithful summary of the following content from {names}.
 
 Rules:
@@ -67,6 +88,7 @@ SUMMARY:"""
 
 def build_key_points_prompt(text: str, document_names: list[str]) -> str:
     names = ", ".join(document_names) if document_names else "the uploaded document(s)"
+
     return f"""You are SmartDoc AI. Extract the most important key points from {names}.
 
 Rules:
@@ -83,6 +105,7 @@ KEY POINTS:"""
 
 def build_reduce_prompt(partials: list[str], task: str) -> str:
     joined = "\n\n---\n\n".join(partials)
+
     return f"""You are SmartDoc AI. Combine the following section-level notes into one {task}.
 
 Rules:

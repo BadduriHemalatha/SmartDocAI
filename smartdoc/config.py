@@ -1,4 +1,4 @@
-"""Application configuration loaded from environment variables."""
+"""Application configuration loaded from environment variables or Streamlit Secrets."""
 
 from __future__ import annotations
 
@@ -13,24 +13,42 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
 
 
+def _secret_or_env(name: str, default: str = "") -> str:
+    """Read a setting from Streamlit Secrets first, then environment variables."""
+    try:
+        import streamlit as st
+
+        value = st.secrets.get(name)
+        if value is not None:
+            return str(value).strip()
+    except Exception:
+        pass
+
+    return os.getenv(name, default).strip()
+
+
 def _int_env(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
+    raw = _secret_or_env(name)
+    if raw == "":
         return default
     try:
         return int(raw)
     except ValueError as exc:
-        raise ValueError(f"Environment variable {name} must be an integer, got {raw!r}") from exc
+        raise ValueError(
+            f"Environment variable {name} must be an integer, got {raw!r}"
+        ) from exc
 
 
 def _float_env(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
+    raw = _secret_or_env(name)
+    if raw == "":
         return default
     try:
         return float(raw)
     except ValueError as exc:
-        raise ValueError(f"Environment variable {name} must be a number, got {raw!r}") from exc
+        raise ValueError(
+            f"Environment variable {name} must be a number, got {raw!r}"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -60,19 +78,23 @@ class Settings:
 
 def load_settings() -> Settings:
     root = _PROJECT_ROOT
+
     return Settings(
-        gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip(),
-        embedding_model=os.getenv(
-            "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
-        ).strip(),
+        gemini_api_key=_secret_or_env("GEMINI_API_KEY"),
+        gemini_model=_secret_or_env(
+            "GEMINI_MODEL", "gemini-3.5-flash-lite"
+        ),
+        embedding_model=_secret_or_env(
+            "EMBEDDING_MODEL",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        ),
         chunk_size=_int_env("CHUNK_SIZE", 900),
         chunk_overlap=_int_env("CHUNK_OVERLAP", 150),
         top_k=_int_env("TOP_K", 5),
-        min_similarity=_float_env("MIN_SIMILARITY", 0.28),
+        min_similarity=_float_env("MIN_SIMILARITY", 0.20),
         max_file_size_mb=_int_env("MAX_FILE_SIZE_MB", 20),
         max_context_chars=_int_env("MAX_CONTEXT_CHARS", 12000),
-        log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
+        log_level=_secret_or_env("LOG_LEVEL", "INFO").upper(),
         project_root=root,
         log_dir=root / "logs",
     )
